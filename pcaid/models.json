@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "_note": "Edit this file to change the model tiers. List models smallest first. Sizes and tags come from a third-party summary of the Ollama library (checked 2026-09-30); thresholds are first guesses to be tuned by testing on real PCs.",
+  "disk_headroom_gb": 2.0,
+  "models": [
+    {
+      "id": "tiny",
+      "name": "Qwen3.5 0.8B",
+      "ollama_tag": "qwen3.5:0.8b",
+      "download_gb": 1.0,
+      "min_ram_gb": 2.0,
+      "min_vram_gb": 1.5,
+      "cpu_min_threads": 2
+    },
+    {
+      "id": "small",
+      "name": "Qwen3.5 2B",
+      "ollama_tag": "qwen3.5:2b",
+      "download_gb": 2.7,
+      "min_ram_gb": 4.0,
+      "min_vram_gb": 3.5,
+      "cpu_min_threads": 4
+    },
+    {
+      "id": "medium",
+      "name": "Qwen3.5 4B",
+      "ollama_tag": "qwen3.5:4b",
+      "download_gb": 3.4,
+      "min_ram_gb": 6.0,
+      "min_vram_gb": 5.0,
+      "cpu_min_threads": 6
+    },
+    {
+      "id": "large",
+      "name": "Qwen3.5 9B",
+      "ollama_tag": "qwen3.5:9b",
+      "download_gb": 6.6,
+      "min_ram_gb": 9.0,
+      "min_vram_gb": 9.0,
+      "cpu_min_threads": 12
+    }
+  ]
+}
