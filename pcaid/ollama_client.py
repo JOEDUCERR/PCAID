@@ -155,6 +155,22 @@ class OllamaClient:
                 return entry.get("context_length")
         return None
 
+    def preload(self, model: str, num_ctx: int, keep_alive: str = "30m") -> None:
+        """Load the model into memory now, so the first real question is not slow.
+
+        Ollama's documented way to do this is a chat request with no messages.
+        On a slow disk this call can take a minute or more.
+        """
+        payload = {
+            "model": model,
+            "messages": [],
+            "stream": False,
+            "options": {"num_ctx": num_ctx},
+            "keep_alive": keep_alive,
+        }
+        with self._open("POST", "/api/chat", payload) as response:
+            self._read_json(response)
+
     def unload(self, model: str) -> None:
         """Free the model's memory now. (The downloaded files stay on disk.)"""
         payload = {"model": model, "keep_alive": 0}

@@ -488,7 +488,11 @@ def summarize(profile: dict[str, Any]) -> str:
     software = profile.get("software") or {}
     gpus = profile.get("gpus") or []
 
-    os_line = f"OS: {_v(os_info.get('name'))} {_v(os_info.get('version'), '')}".rstrip()
+    # Linux names such as "Ubuntu 24.04.5 LTS" already contain the version number.
+    os_name = _v(os_info.get("name"))
+    version = os_info.get("version")
+    shown_version = "" if version is None or str(version) in os_name else f" {version}"
+    os_line = f"OS: {os_name}{shown_version}"
     os_line += f" ({_v(os_info.get('family'))} {_v(os_info.get('arch'))}"
     if os_info.get("kernel"):
         os_line += f", kernel {os_info['kernel']}"

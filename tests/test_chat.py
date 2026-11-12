@@ -50,6 +50,10 @@ class ChatTests(unittest.TestCase):
         requests = fake.chat_requests()
         self.assertEqual(len(requests), 2)                      # the problem, then "why?"
         self.assertEqual(requests[0]["messages"][1]["content"], "my PC is slow")
+        self.assertNotIn("my PC is slow", requests[0]["messages"][0]["content"])  # not repeated in the system prompt
+        self.assertIn("Loading qwen3.5:4b into memory", text)   # the user is told about the wait
+        self.assertIn("Model ready", text)
+        self.assertEqual(len(fake.preload_requests()), 1)       # model loaded once, before the first question
         self.assertEqual(requests[0]["options"]["num_ctx"], 8192)
         self.assertIs(requests[0]["think"], False)              # thinking switched off by default
         self.assertEqual(len(fake.unload_requests()), 1)        # model unloaded on exit
@@ -60,6 +64,16 @@ class ChatTests(unittest.TestCase):
         run_chat(fake, ["slow"], ["/exit"])
         system = fake.chat_requests()[0]["messages"][0]["content"]
         self.assertIn("7.4 GB available", system)
+        self.assertIn("This PC runs Test OS", system)
+        self.assertIn("PowerShell", system)  # the canned profile is a Windows PC
+
+    def test_a_failed_model_load_is_reported_and_stops_the_program(self):
+        fake = self.start(preload_error="not enough memory to load model")
+        code, text = run_chat(fake, ["slow"], [])
+        self.assertEqual(code, 1)
+        self.assertIn("could not load the model", text)
+        self.assertIn("not enough memory", text)
+        self.assertEqual(fake.chat_requests(), [])
 
     def test_keep_loaded_skips_the_unload(self):
         fake = self.start()

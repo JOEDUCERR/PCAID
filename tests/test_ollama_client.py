@@ -47,6 +47,19 @@ class ClientTests(unittest.TestCase):
         client.unload("qwen3.5:4b")
         self.assertEqual(fake.unload_requests(), [{"model": "qwen3.5:4b", "keep_alive": 0}])
 
+    def test_preload_sends_a_chat_request_with_no_messages(self):
+        fake, client = self.start()
+        client.preload("qwen3.5:4b", num_ctx=6000, keep_alive="10m")
+        self.assertEqual(fake.preload_requests(), [{
+            "model": "qwen3.5:4b", "messages": [], "stream": False,
+            "options": {"num_ctx": 6000}, "keep_alive": "10m"}])
+        self.assertEqual(fake.chat_requests(), [])  # it is not counted as a question
+
+    def test_preload_reports_loading_errors(self):
+        _, client = self.start(preload_error="not enough memory to load model")
+        with self.assertRaisesRegex(OllamaError, "not enough memory"):
+            client.preload("qwen3.5:4b", num_ctx=8192)
+
     # -- thinking support --
     def test_thinking_toggle_supported(self):
         _, client = self.start()

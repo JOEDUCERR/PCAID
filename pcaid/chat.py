@@ -5,8 +5,10 @@ What it does, in order:
   1. Profiles this PC (profiler.py) and keeps the summary as permanent context.
   2. Picks a model (selector.py), or uses the one given with --model.
   3. Checks that Ollama is running and has that model.
-  4. Chats. The model answers in plain text; it cannot run commands yet.
-  5. On exit, unloads the model from memory.
+  4. Loads the model into memory, telling the user while it waits (can take a
+     minute on a slow disk).
+  5. Chats. The model answers in plain text; it cannot run commands yet.
+  6. On exit, unloads the model from memory.
 
 Examples (run from the project root):
     python -m pcaid.chat "my laptop is very slow since yesterday"
@@ -22,6 +24,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+import time
 from typing import Any, Optional
 
 from .ollama_client import DEFAULT_URL, ChatChunk, ChatStats, OllamaClient, OllamaError
@@ -110,6 +113,15 @@ def _resolve_thinking(client: OllamaClient, tag: str, wanted: str) -> Optional[b
     return wanted == "on"
 
 
+def _os_facts(profile: dict[str, Any]) -> tuple[Optional[str], Optional[str]]:
+    """(name, family) of the operating system, for the system prompt."""
+    info = profile.get("os") or {}
+    name = info.get("name")
+    if name == "macOS" and info.get("version"):
+        name = f"macOS {info['version']}"
+    return name, info.get("family")
+
+
 # ---------------------------------------------------------------------------
 # The conversation
 # ---------------------------------------------------------------------------
@@ -195,7 +207,6 @@ def _handle_command(command: str, session: Session, client: OllamaClient) -> boo
 
 
 def _chat_loop(session: Session, client: OllamaClient, first_message: str, show_stats: bool) -> None:
-    print(_dim("(the first answer can take a while: the model has to load)"))
     _print_answer(session, first_message, show_stats)
     while True:
         try:
@@ -250,7 +261,19 @@ def main(argv: Optional[list[str]] = None) -> int:
         print("No problem described, nothing to do.")
         return 0
 
-    session = Session(client, tag, build_system_prompt(pc_summary, issue),
+    # Load the model now and say so: on a slow disk this takes a minute or more,
+    # and silence looks like a hang.
+    print(f"Loading {tag} into memory (this can take a minute on a slow disk)...", flush=True)
+    started = time.monotonic()
+    try:
+        client.preload(tag, args.ctx)
+    except OllamaError as exc:
+        print(f"Error: could not load the model: {exc}")
+        return 1
+    print(f"Model ready ({time.monotonic() - started:.0f}s).")
+
+    os_name, os_family = _os_facts(profile)
+    session = Session(client, tag, build_system_prompt(pc_summary, os_name, os_family), issue,
                       num_ctx=args.ctx, think=think)
     print(_dim("Type /help for commands."))
     try:

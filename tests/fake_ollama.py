@@ -23,6 +23,7 @@ class FakeOllama:
         error_after_first_chunk: Optional[str] = None,
         hold_before_done: Optional[threading.Event] = None,
         loaded_context=8192,
+        preload_error: Optional[str] = None,
     ):
         self.models = list(models)
         self.reply_chunks = list(reply_chunks)
@@ -32,6 +33,7 @@ class FakeOllama:
         self.error_after_first_chunk = error_after_first_chunk
         self.hold_before_done = hold_before_done
         self.loaded_context = loaded_context
+        self.preload_error = preload_error
         self.requests = []  # (method, path, json body or None)
 
         self._server = ThreadingHTTPServer(("127.0.0.1", 0), self._make_handler())
@@ -53,7 +55,14 @@ class FakeOllama:
         return model in self.models or (model is not None and ":" not in model and f"{model}:latest" in self.models)
 
     def chat_requests(self):
-        return [body for method, path, body in self.requests if path == "/api/chat"]
+        """Real questions (requests that carry messages)."""
+        return [body for method, path, body in self.requests
+                if path == "/api/chat" and body and body.get("messages")]
+
+    def preload_requests(self):
+        """Requests that only load the model (a chat request with no messages)."""
+        return [body for method, path, body in self.requests
+                if path == "/api/chat" and body is not None and body.get("messages") == []]
 
     def unload_requests(self):
         return [body for method, path, body in self.requests
@@ -120,6 +129,12 @@ class FakeOllama:
                 elif self.path == "/api/chat":
                     if not fake.knows(model):
                         return self._not_found(model)
+                    if body.get("messages") == []:  # Ollama's "just load the model" request
+                        if fake.preload_error:
+                            return self._send_json(500, {"error": fake.preload_error})
+                        return self._send_json(200, {
+                            "model": model, "message": {"role": "assistant", "content": ""},
+                            "done": True, "done_reason": "load"})
                     self._stream_chat(model)
                 else:
                     self._send_json(404, {"error": "unknown path"})

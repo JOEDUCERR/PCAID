@@ -5,10 +5,13 @@ Why trimming exists: the model can only "see" num_ctx tokens at once. If the
 conversation grows past that, the oldest text is silently cut off, and the
 model may lose its instructions. So we manage it ourselves:
 
-  * The system message (rules + PC facts + the original problem) is sent every
-    time and is NEVER dropped.
+  * The system message (rules + PC facts) is sent every time and is NEVER
+    dropped.
   * When the history gets too long, the oldest user+assistant pairs are dropped
     first. The newest message is always kept.
+  * The user's first message (the problem) is normally just the first message
+    of the history. Once it has been dropped (or the chat was reset), it is
+    added to the system message instead, so the model never loses it.
   * A message that cannot fit even on its own is refused with a clear error.
 
 Token counts are estimates (characters / 3, deliberately pessimistic) because
@@ -19,6 +22,7 @@ from __future__ import annotations
 from typing import Iterator, Optional, Union
 
 from .ollama_client import ChatChunk, ChatStats, OllamaClient
+from .prompts import with_original_problem
 
 DEFAULT_NUM_CTX = 8192
 CONTEXT_BUDGET_FRACTION = 0.75   # the rest is left free for the model's answer
@@ -58,14 +62,17 @@ class Session:
         self,
         client: OllamaClient,
         model: str,
-        system_prompt: str,
+        base_prompt: str,
+        issue: str,
         num_ctx: int = DEFAULT_NUM_CTX,
         think: Optional[bool] = None,
         keep_alive: str = "30m",
     ):
         self.client = client
         self.model = model
-        self.system_prompt = system_prompt
+        self.base_prompt = base_prompt   # rules + PC facts, fixed for the session
+        self.issue = issue.strip()       # the user's first message
+        self.issue_in_prompt = False     # True once the issue is no longer in the history
         self.num_ctx = num_ctx
         self.think = think
         self.keep_alive = keep_alive
@@ -73,9 +80,21 @@ class Session:
         self.dropped_messages = 0                 # total dropped so far to fit the context
 
     @property
+    def system_prompt(self) -> str:
+        """What the model is told before the conversation starts."""
+        if self.issue_in_prompt:
+            return with_original_problem(self.base_prompt, self.issue)
+        return self.base_prompt
+
+    @property
     def history_budget(self) -> int:
-        """Tokens available for history, after the system message and answer room."""
-        return int(self.num_ctx * CONTEXT_BUDGET_FRACTION) - estimate_tokens(self.system_prompt)
+        """Tokens available for history, after the system message and answer room.
+
+        Room for the original-problem note is always reserved, so the budget
+        does not shrink in the middle of a conversation.
+        """
+        largest_prompt = with_original_problem(self.base_prompt, self.issue)
+        return int(self.num_ctx * CONTEXT_BUDGET_FRACTION) - estimate_tokens(largest_prompt)
 
     def estimated_tokens(self) -> int:
         return estimate_tokens(self.system_prompt) + sum(
@@ -83,8 +102,9 @@ class Session:
         )
 
     def reset(self) -> None:
-        """Forget the conversation. The system message (and so the problem) stays."""
+        """Forget the conversation. The PC facts stay, and the problem moves into the system message."""
         self.history.clear()
+        self.issue_in_prompt = True
 
     def ask(self, user_text: str) -> Iterator[Union[ChatChunk, ChatStats]]:
         """Send a message; returns a stream of the reply.
@@ -103,7 +123,10 @@ class Session:
     def _answer(self, user_text: str) -> Iterator[Union[ChatChunk, ChatStats]]:
         self.history.append({"role": "user", "content": user_text})
         kept = trim_turns(self.history, self.history_budget)
-        self.dropped_messages += len(self.history) - len(kept)
+        dropped_now = len(self.history) - len(kept)
+        self.dropped_messages += dropped_now
+        if dropped_now:
+            self.issue_in_prompt = True  # the oldest pair held the problem
         self.history = kept
 
         messages = [{"role": "system", "content": self.system_prompt}] + self.history

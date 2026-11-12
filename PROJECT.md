@@ -37,6 +37,7 @@ IT experience.
 | Build starts with the hardware/software profiler, then the model selector, then the chat loop | Done |
 | Keep this PROJECT.md, updated after every piece of work | Agreed |
 | Code is built and delivered file by file, reviewed and integrated manually | Agreed |
+| Test machines: a Windows 11 laptop and an Ubuntu desktop | Agreed |
 | Hardware limits are hard: a user preference never pushes the choice past what fits | Done (selector) |
 | `auto` = largest comfortable model; `--light` = smallest; `--heavy` = largest that fits, may be slow | Done (selector) |
 | Model tiers live in `models.json`, not in code | Done |
@@ -47,16 +48,20 @@ IT experience.
 | No hostname, username, serials, IP/MAC or file paths collected | Done |
 | Ollama client talks only to this PC (refuses other addresses) and ignores system proxy settings | Done |
 | Context window is always set explicitly (`num_ctx`); default 8192 tokens | Done; value Proposed (tune) |
-| System message = rules + PC facts + the original problem; sent every time, never trimmed | Done |
+| System message = rules + the PC's operating system and shell + PC facts; sent every time, never trimmed | Done |
+| The user's problem is the first user message; it is added to the system message only once it has been trimmed away or the chat was reset | Done (new, see log 2026-11-11) |
 | When history is too long, oldest user+assistant pairs are dropped first; budget is 75% of `num_ctx` | Done |
 | Token counts are estimates (characters / 3, pessimistic) | Done; revisit if it misjudges |
-| Thinking mode is switched off by default when the model allows it (checked via `/api/show`); `--think on` enables it | Proposed (verify speed and quality on the real model) |
+| Prompt states the OS and shell outright and forbids other systems' tools; asks for plain text (no Markdown) | Done (new), to be checked on real models |
+| The model is loaded up front with a visible "Loading..." message, before the first question | Done (new) |
+| Thinking mode is switched off by default when the model allows it (checked via `/api/show`); `--think on` enables it | Proposed (verify speed and quality) |
 | Chat is a plain `input()`/`print()` loop; the real terminal UI is step 6 | Agreed |
 | Ctrl+C during an answer stops it and drops that question; Ctrl+C at the prompt quits | Done |
 | On exit the model is unloaded from memory (files stay on disk until step 7) | Done |
 | `--model TAG` bypasses the selector (for comparing models and tuning thresholds) | Done |
-| The model gets a toolbox of named, tested functions, not a raw shell | Proposed |
-| Three permission tiers: read-only auto-runs; changes need a yes; destructive actions blocked | Proposed |
+| The model gets a toolbox of named, tested functions, not a raw shell | Proposed (step 4) |
+| Small tiers (0.8B, 2B) only choose from the toolbox and numbered options; they do not write free-form commands | Proposed (step 4), based on the 2B run |
+| Three permission tiers: read-only auto-runs; changes need a yes; destructive actions blocked | Proposed (step 5) |
 | Weak-PC fallback ladder: no-AI runbooks, tiny model, remote model on LAN, offline model from USB | Proposed |
 | Python 3.9+ for the prototype | Proposed |
 | Prototype on Ollama behind a runtime interface; later swap to llama.cpp in a temp folder for easy cleanup | Proposed |
@@ -65,7 +70,7 @@ IT experience.
 
 - [x] 1. Profiler: hardware/software facts as compact JSON + short text summary
 - [x] 2. Model selector: pure function (profile + preference -> model or none), config-driven
-- [~] 3. Chat loop: profile summary as system prompt, explicit context size, streaming, trimming
+- [~] 3. Chat loop: ran on real Ollama (Ubuntu desktop, 2B and 4B); fixes from that run (section 9) not yet re-checked
 - [ ] 4. Read-only tools + tool-calling loop (the system prompt's "cannot run anything yet" changes here)
 - [ ] 5. Permission layer + command log (+ restore point before changes)
 - [ ] 6. Terminal UI: streaming output, option menus
@@ -82,14 +87,13 @@ pcaid/
   profiler.py        # step 1: probe the PC
   selector.py        # step 2: choose a model from the profile
   models.json        # step 2: model tiers and thresholds (edit here to change models)
-  ollama_client.py   # step 3: talk to the local Ollama server
+  ollama_client.py   # step 3: talk to the local Ollama server (chat, preload, unload, ...)
   prompts.py         # step 3: the system prompt
   session.py         # step 3: history, context budget, trimming
   chat.py            # step 3: the terminal chat program
 tests/
-  fake_ollama.py     # step 3: fake Ollama server used by the tests (not part of the product)
-  test_selector.py   # 21 tests
-  test_ollama_client.py, test_session.py, test_chat.py   # 39 tests
+  fake_ollama.py     # fake Ollama server used by the tests (not part of the product)
+  test_profiler.py, test_selector.py, test_ollama_client.py, test_session.py, test_chat.py
 ```
 
 Commands (run from the project root):
@@ -101,7 +105,7 @@ Commands (run from the project root):
   - Inside the chat: `/help`, `/info`, `/system`, `/reset`, `/exit`
 - `python -m pcaid.profiler` (summary), `--json` (full), `--no-network` (skip internet check)
 - `python -m pcaid.selector` (probe this PC, auto), `--light`, `--heavy`, `--profile FILE`
-- `python -m unittest discover -s tests -v` (60 tests, about a second)
+- `python -m unittest discover -s tests -v` (72 tests, about a second)
 
 Before the first chat, download the model once: `ollama pull qwen3.5:4b` (or whichever model
 `python -m pcaid.selector` picks). Automatic download and removal is step 7.
@@ -131,28 +135,44 @@ Current tiers (`models.json`):
 
 Download sizes come from a third-party summary of the Ollama library (checked 2026-09-30).
 RAM, VRAM and thread thresholds are **first guesses**; tune them with the speed numbers the
-chat now prints after every answer.
+chat prints after every answer. First real measurements are in section 8.
 
-## 7. How the chat manages the model's memory (step 3)
+## 7. How the chat manages the model's memory
 
 - Each request sends: system message + the conversation so far. `num_ctx` is sent every time.
-- System message (never dropped): rules, the PC summary from the profiler, and the original problem.
-- Budget for the conversation = 75% of `num_ctx` minus the system message; the rest is room for the answer.
-- Over budget: oldest user+assistant pair is dropped, repeatedly; the chat prints a notice.
+- System message (never dropped): rules, the PC's OS and shell, and the PC summary from the profiler.
+- The user's problem is the first user message. If the oldest pairs are dropped, or `/reset` is used,
+  the problem is added to the system message so it is never lost.
+- Budget for the conversation = 75% of `num_ctx` minus the system message (with room reserved for
+  the problem note); the rest is room for the answer.
 - A single message too big to ever fit is refused with advice to paste less.
-- `/info` shows the context size Ollama is really running with (from `/api/ps`), to confirm
-  that `num_ctx` took effect.
+- `/info` shows the context size Ollama is really running with (from `/api/ps`).
 
-## 8. Open questions and known limitations
+## 8. Real measurements (Ubuntu desktop, first real run, 2026-11-11)
 
-- **Step 3 has never run against a real model.** It is tested against a fake Ollama server that
-  speaks the same streaming protocol, which proves the code, not the model. To check on the
-  laptop: speed (tokens/s) on CPU for 0.8B / 2B / 4B, whether `/info` shows 8192, whether
-  `think: false` is accepted, and whether the answers are useful.
+| model | speed | first load | notes |
+|---|---|---|---|
+| Qwen3.5 2B | 18.8 - 20.4 tokens/s | 15.1 s | ignored the OS: gave Windows/PowerShell steps and an invented cmdlet (`get-diagnostics`) on an Ubuntu PC |
+| Qwen3.5 4B (selector's `auto` choice) | 10.4 - 11.3 tokens/s | 63.0 s | used the PC facts (Ubuntu, low free disk), gave sensible Linux commands (`df -h`, `free -m`) |
+
+- Not recorded: whether the GPU was used (`ollama ps` shows the CPU/GPU split), and the profiler
+  output for that machine, so the speeds cannot yet be tied to hardware or used to tune thresholds.
+- A 63 s silent wait looked like a hang -> model is now preloaded with a visible message.
+- Both models began their first answer by restating the problem in their own words. Suspected
+  cause: the problem was in the system prompt and again as the first message (not proven).
+- Both models used Markdown (`**bold**`, code fences), which looks like noise in a terminal.
+- Both models asked the user to run commands whose results the tool could simply collect
+  (e.g. `df -h && free -m`): this is what step 4 fixes.
+
+## 9. Open questions and known limitations
+
+- **The step-3 fixes below have not been re-run on a real model:** OS/shell line, plain-text rule,
+  problem no longer repeated in the system prompt, preload message. Check: does the echo line
+  go away, does the 2B stay on Linux, is the output free of `**` and code fences?
 - Profiler verified on real Linux (Ubuntu 24.04) and real Windows 11. **macOS is still
   untested on a real Mac** (canned-output tests only).
-- Windows: WMI caps GPU memory at 4 GB, so a discrete AMD card (RX 6600M on the first
-  Windows test PC) shows "VRAM unknown". Exact VRAM currently comes only from `nvidia-smi`.
+- Windows: WMI caps GPU memory at 4 GB, so a discrete AMD card (RX 6600M on the Windows laptop)
+  shows "VRAM unknown". Exact VRAM currently comes only from `nvidia-smi`.
 - Network probe tests a direct TCP connection; behind an HTTP-only proxy it reports "no".
   The selector therefore only warns, it does not refuse.
 - macOS "available RAM" is an estimate (free + inactive + speculative pages).
@@ -164,11 +184,11 @@ chat now prints after every answer.
 - Qwen3.5 supports thinking. The client checks `/api/show` at runtime and only sends
   `think: false` if the model allows switching it off. Whether off hurts answer quality on
   small models is untested.
-- Ollama's `prompt_eval_count` may only count uncached tokens, so the context figure shown in the
-  stats line uses our own estimate instead; the Ollama numbers are used for speed only.
-- The model cannot run commands yet; the system prompt tells it to ask the user to run
-  read-only commands and paste the output. This changes in step 4.
-- The system prompt is a first draft. Tune its wording after seeing real answers.
+- Ollama's `prompt_eval_count` may only count uncached tokens, so the context figure in the
+  stats line uses our own estimate; the Ollama numbers are used for speed only.
+- The model cannot run commands yet; the prompt tells it to ask the user to run read-only
+  commands and paste the output. This changes in step 4.
+- The system prompt is still a first draft. Tune its wording after seeing more real answers.
 - Ollama must already be installed and running; the chat uses `127.0.0.1:11434` unless
   `--ollama-url` is given (the `OLLAMA_HOST` environment variable is not read). Installing and
   removing Ollama itself on a client PC belongs to step 7.
@@ -182,18 +202,38 @@ chat now prints after every answer.
   SmartScreen / Defender and macOS Gatekeeper. Code signing is needed eventually.
 - Name `pcaid` is a placeholder.
 
-## 9. Log (newest first)
+## 10. Step 4 plan (proposed, not started)
 
+- Tool-calling loop: the model asks for a named tool, the program runs it, the (size-capped) output
+  goes back to the model as data, repeat until the model answers. Cap the number of tool calls per
+  answer. Tool output is never treated as instructions.
+- First toolbox, all read-only, one implementation per OS: `disk_space`, `memory_and_top_processes`,
+  `startup_items`, `recent_errors` (Windows event log / journalctl / macOS log), `network_check`,
+  `uptime_and_pending_reboot`.
+- `ask_user(question, options)`: the model's way to ask for a decision; prints a numbered menu in the
+  plain chat for now, real menu in step 6.
+- Anything that changes the system waits for step 5 (permissions).
+- Decide which tiers may use tools freely and which are limited to the toolbox plus numbered options.
+
+## 11. Log (newest first)
+
+- **2026-11-11**: Step 3 fixes after the first real run (section 8). Changed `prompts.py` (OS and
+  shell stated outright, other systems' tools forbidden, plain text requested, "facts were measured,
+  do not ask again"; the problem is no longer repeated in the system prompt), `session.py` (the
+  problem is added to the system message only after trimming or `/reset`; the budget reserves room
+  for it), `ollama_client.py` (new `preload`), `chat.py` (asks for the problem, then loads the model
+  with a visible message, passes OS facts to the prompt), `profiler.py` (summary no longer prints the
+  Linux version twice, e.g. "Ubuntu 24.04.5 LTS 24.04"). New `tests/test_profiler.py`; fake server
+  handles preload. 72 tests pass. Not re-run on a real model yet.
+- **2026-11-11**: Step 3 first real run on an Ubuntu desktop with Qwen3.5 2B and 4B (section 8):
+  streaming, stats, loading, selector choice (4B) all worked on real Ollama. 4B about 10-11 tokens/s,
+  2B about 19-20. Found: 2B ignored the OS, both echoed the problem, Markdown in output, 63 s silent
+  first load.
 - **2026-11-11**: Step 3 written. New files: `pcaid/ollama_client.py`, `pcaid/prompts.py`,
   `pcaid/session.py`, `pcaid/chat.py`, and tests `tests/fake_ollama.py`, `test_ollama_client.py`,
-  `test_session.py`, `test_chat.py`. 60 tests pass (21 selector + 39 new), run in about a second.
-  Tested against a fake Ollama server that streams chunked line-by-line replies like the real one:
-  streaming arrives incrementally, context size is always sent, `think` only when allowed,
-  Ctrl+C-style early stop removes the unanswered question, trimming never drops the system message,
-  the client refuses non-local addresses and ignores proxy variables, missing model / Ollama not
-  running / oversized paste / no model fits all give clear messages. API details (fields, `think`,
-  `keep_alive: 0`, `/api/show`, `/api/ps`) were checked against Ollama's published OpenAPI spec.
-  **Not yet run against a real model.**
+  `test_session.py`, `test_chat.py`. 60 tests pass. Tested against a fake Ollama server that streams
+  chunked line-by-line replies like the real one. API details (fields, `think`, `keep_alive: 0`,
+  `/api/show`, `/api/ps`) checked against Ollama's published OpenAPI spec.
 - **2026-11-09**: Step 2 done. Wrote `pcaid/selector.py`, `pcaid/models.json` and
   `tests/test_selector.py`. 21 tests pass. On the Windows laptop's numbers the selector picks
   Qwen3.5 4B for `auto` and `--heavy` (9B needs 9 GB RAM, 7.4 GB available) and 0.8B for `--light`.
